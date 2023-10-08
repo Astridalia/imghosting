@@ -10,8 +10,9 @@ import (
 )
 
 type Image struct {
-	ID   string `json:"id"`
-	Data string `json:"data"`
+	ID         string `json:"id"`
+	Data       string `json:"data"`
+	Properties string `json:"properties"`
 }
 
 var (
@@ -48,6 +49,9 @@ func uploadImage(w http.ResponseWriter, r *http.Request) {
 		handleError(w, "Failed to read the image", http.StatusBadRequest)
 		return
 	}
+
+	jsonStr := r.FormValue("properties")
+
 	defer file.Close()
 
 	data, err := ioutil.ReadAll(file)
@@ -59,18 +63,19 @@ func uploadImage(w http.ResponseWriter, r *http.Request) {
 	imageData := base64.StdEncoding.EncodeToString(data)
 
 	imageID++
-	id := fmt.Sprintf("image_%d", imageID)
+	id := fmt.Sprint(imageID)
 
 	image := Image{
-		ID:   id,
-		Data: imageData,
+		ID:         id,
+		Data:       imageData,
+		Properties: jsonStr,
 	}
 	imagesLock.Lock()
 	images[id] = image
 	imagesLock.Unlock()
 
 	w.WriteHeader(http.StatusCreated)
-	fmt.Fprintf(w, `{"id": "%s"}`, id)
+	fmt.Fprintf(w, `{"id": "%s", "properties": %s, "data": %s}`, image.ID, image.Properties, image.Data)
 }
 
 func getImageByID(w http.ResponseWriter, r *http.Request) {
