@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -58,7 +58,7 @@ func uploadImage(w http.ResponseWriter, r *http.Request) {
 		}
 	}(file)
 
-	data, err := ioutil.ReadAll(file)
+	data, err := io.ReadAll(file)
 	if err != nil {
 		handleError(w, "Failed to read the image data", http.StatusInternalServerError)
 		return
