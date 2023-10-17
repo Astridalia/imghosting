@@ -2,115 +2,112 @@ package main
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
+	"github.com/astridalia/tinyrpg/database"
+	"github.com/astridalia/tinyrpg/models"
+	"github.com/gin-gonic/gin"
+	"github.com/gocql/gocql"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"os"
-	"sync"
 )
 
-type Image struct {
-	ID         string `json:"id"`
-	Data       string `json:"data"`
-	Properties string `json:"properties"`
-}
-
-var (
-	images     = make(map[string]Image)
-	imagesLock sync.RWMutex
-	imageID    int
-)
+var cassandraClient *database.MyCassandraClient
 
 func main() {
-	http.Handle("/", http.FileServer(http.Dir("./templates")))
-	http.HandleFunc("/upload", uploadImage)
-	http.HandleFunc("/images/", getImageByID)
+	// Initialize Cassandra client
+	cassandraClient = database.InitCassandra()
 
+	router := gin.Default()
+	router.StaticFile("/", "./templates")
+	// Define routes
+	router.POST("/upload", handleUpload)
+
+	// Define the /images route for viewing images by ID
+	router.GET("/images/:id", handleGetImage)
+
+	// Define a wildcard route to serve static files, but make sure it comes after specific routes
+
+	// Get the port from the environment or use the default port 8080
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-	log.Printf("Server is running on port %s...\n", port)
 
-	err := http.ListenAndServe(":"+port, nil)
+	// Start the server
+	address := ":" + port
+	err := router.Run(address)
 	if err != nil {
-		log.Printf("Server error: %s\n", err)
+		log.Fatalf("Server error: %v", err)
 	}
 }
 
-func uploadImage(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
-		return
-	}
-
-	file, _, err := r.FormFile("image")
+func handleUpload(c *gin.Context) {
+	file, _, err := c.Request.FormFile("image")
 	if err != nil {
-		handleError(w, "Failed to read the image", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read the image"})
 		return
 	}
-	defer func() {
-		if err := file.Close(); err != nil {
-			log.Printf("Server Error: %s", err)
+	defer func(file multipart.File) {
+		err := file.Close()
+		if err != nil {
+			panic(err)
 		}
-	}()
+	}(file)
 
 	data, err := io.ReadAll(file)
 	if err != nil {
-		handleError(w, "Failed to read the image data", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read the image data"})
+		return
+	}
+
+	id, err := gocql.RandomUUID()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate a UUID"})
 		return
 	}
 
 	imageData := base64.StdEncoding.EncodeToString(data)
+	jsonStr := c.PostForm("properties")
 
-	imageID++
-	id := fmt.Sprint(imageID)
-
-	jsonStr := r.FormValue("properties")
-	image := Image{
-		ID:         id,
-		Data:       imageData,
-		Properties: jsonStr,
+	image := &models.Image{ID: id.String(), Data: imageData, Properties: jsonStr}
+	if err := cassandraClient.InsertImage(image); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save the image to Cassandra"})
+		return
 	}
 
-	imagesLock.Lock()
-	images[id] = image
-	imagesLock.Unlock()
-
-	w.WriteHeader(http.StatusCreated)
-	if err := json.NewEncoder(w).Encode(image); err != nil {
-		log.Printf("Server Error: %s", err)
-	}
+	imageURL := fmt.Sprintf("/images/%s", id)
+	c.Header("Location", imageURL)
+	c.JSON(http.StatusCreated, gin.H{"id": id})
 }
 
-func getImageByID(w http.ResponseWriter, r *http.Request) {
-	id := r.URL.Path[len("/images/"):]
+func handleGetImage(c *gin.Context) {
+	id := c.Param("id")
 
-	imagesLock.RLock()
-	image, ok := images[id]
-	imagesLock.RUnlock()
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid image ID"})
+		return
+	}
 
-	if !ok {
-		handleError(w, "Image not found", http.StatusNotFound)
+	image, err := cassandraClient.GetImageFromCassandra(id)
+
+	if err != nil {
+		// Check if the error is due to "not found"
+		if err == database.ErrImageNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Image not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve the image"})
 		return
 	}
 
 	imageData, err := base64.StdEncoding.DecodeString(image.Data)
 	if err != nil {
-		handleError(w, "Failed to decode image data", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to decode image data"})
 		return
 	}
 
-	w.Header().Set("Content-Type", "image/jpeg")
-	w.WriteHeader(http.StatusOK)
-
-	if _, err := w.Write(imageData); err != nil {
-		log.Printf("Server Error: %s", err)
-	}
-}
-
-func handleError(w http.ResponseWriter, message string, statusCode int) {
-	http.Error(w, message, statusCode)
+	c.Data(http.StatusOK, "image/jpeg", imageData)
 }
