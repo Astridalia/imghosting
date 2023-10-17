@@ -2,9 +2,10 @@ package main
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
-	"mime/multipart"
+	"log"
 	"net/http"
 	"os"
 	"sync"
@@ -26,14 +27,16 @@ func main() {
 	http.Handle("/", http.FileServer(http.Dir("./templates")))
 	http.HandleFunc("/upload", uploadImage)
 	http.HandleFunc("/images/", getImageByID)
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-	fmt.Printf("Server is running on port %s...\n", port)
+	log.Printf("Server is running on port %s...\n", port)
+
 	err := http.ListenAndServe(":"+port, nil)
 	if err != nil {
-		fmt.Printf("Server error: %s\n", err)
+		log.Printf("Server error: %s\n", err)
 	}
 }
 
@@ -48,15 +51,11 @@ func uploadImage(w http.ResponseWriter, r *http.Request) {
 		handleError(w, "Failed to read the image", http.StatusBadRequest)
 		return
 	}
-
-	jsonStr := r.FormValue("properties")
-
-	defer func(file multipart.File) {
-		err := file.Close()
-		if err != nil {
-			fmt.Printf("Server Error: %s", err.Error())
+	defer func() {
+		if err := file.Close(); err != nil {
+			log.Printf("Server Error: %s", err)
 		}
-	}(file)
+	}()
 
 	data, err := io.ReadAll(file)
 	if err != nil {
@@ -69,20 +68,20 @@ func uploadImage(w http.ResponseWriter, r *http.Request) {
 	imageID++
 	id := fmt.Sprint(imageID)
 
+	jsonStr := r.FormValue("properties")
 	image := Image{
 		ID:         id,
 		Data:       imageData,
 		Properties: jsonStr,
 	}
+
 	imagesLock.Lock()
 	images[id] = image
 	imagesLock.Unlock()
 
 	w.WriteHeader(http.StatusCreated)
-	_, err = fmt.Fprintf(w, `{"id": "%s", "properties": %s, "data": %s}`, image.ID, image.Properties, image.Data)
-	if err != nil {
-		fmt.Print("Server Error: ", err.Error())
-		return
+	if err := json.NewEncoder(w).Encode(image); err != nil {
+		log.Printf("Server Error: %s", err)
 	}
 }
 
@@ -105,12 +104,10 @@ func getImageByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "image/jpeg")
-
 	w.WriteHeader(http.StatusOK)
-	_, err = w.Write(imageData)
-	if err != nil {
-		fmt.Println("Server Error: ", err.Error())
-		return
+
+	if _, err := w.Write(imageData); err != nil {
+		log.Printf("Server Error: %s", err)
 	}
 }
 
