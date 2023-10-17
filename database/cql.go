@@ -6,7 +6,7 @@ import (
 	"github.com/gocql/gocql"
 )
 
-var ErrImageNotFound = errors.New("Image not found")
+var ErrImageNotFound = errors.New("image not found")
 
 type MyCassandraClient struct {
 	session *gocql.Session

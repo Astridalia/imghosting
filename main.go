@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"github.com/astridalia/tinyrpg/database"
 	"github.com/astridalia/tinyrpg/models"
@@ -14,21 +15,29 @@ import (
 	"os"
 )
 
-var cassandraClient *database.MyCassandraClient
+var (
+	cassandraClient *database.MyCassandraClient
+	redisClient     *database.MyRedisClient
+)
 
 func main() {
 	// Initialize Cassandra client
 	cassandraClient = database.InitCassandra()
 
+	// Initialize Redis client
+	redisClient = database.InitRedisClient()
+
 	router := gin.Default()
+
+	// Use Redis caching middleware for all routes
+	router.Use(redisClient.CacheMiddleware())
+
+	// Serve static files
 	router.StaticFile("/", "./templates")
+
 	// Define routes
 	router.POST("/upload", handleUpload)
-
-	// Define the /images route for viewing images by ID
 	router.GET("/images/:id", handleGetImage)
-
-	// Define a wildcard route to serve static files, but make sure it comes after specific routes
 
 	// Get the port from the environment or use the default port 8080
 	port := os.Getenv("PORT")
@@ -91,11 +100,22 @@ func handleGetImage(c *gin.Context) {
 		return
 	}
 
+	// Try to get the image data from Redis cache
+	cachedImage, err := redisClient.Get(c, id)
+	if err == nil {
+		imageData, err := base64.StdEncoding.DecodeString(cachedImage)
+		if err == nil {
+			c.Data(http.StatusOK, "image/jpeg", imageData)
+			return
+		}
+	}
+
+	// Data not found in cache, proceed with Cassandra
 	image, err := cassandraClient.GetImageFromCassandra(id)
 
 	if err != nil {
 		// Check if the error is due to "not found"
-		if err == database.ErrImageNotFound {
+		if errors.Is(err, database.ErrImageNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Image not found"})
 			return
 		}
@@ -107,6 +127,12 @@ func handleGetImage(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to decode image data"})
 		return
+	}
+
+	// Cache the image data in Redis, but only if successfully retrieved from Cassandra
+	err = redisClient.Set(c, id, image.Data)
+	if err != nil {
+		// Handle the error (e.g., log it)
 	}
 
 	c.Data(http.StatusOK, "image/jpeg", imageData)
