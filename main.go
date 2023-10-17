@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io/ioutil"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"sync"
@@ -25,12 +26,10 @@ func main() {
 	http.Handle("/", http.FileServer(http.Dir("./templates")))
 	http.HandleFunc("/upload", uploadImage)
 	http.HandleFunc("/images/", getImageByID)
-
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-
 	fmt.Printf("Server is running on port %s...\n", port)
 	err := http.ListenAndServe(":"+port, nil)
 	if err != nil {
@@ -52,7 +51,12 @@ func uploadImage(w http.ResponseWriter, r *http.Request) {
 
 	jsonStr := r.FormValue("properties")
 
-	defer file.Close()
+	defer func(file multipart.File) {
+		err := file.Close()
+		if err != nil {
+			fmt.Printf("Server Error: %s", err.Error())
+		}
+	}(file)
 
 	data, err := ioutil.ReadAll(file)
 	if err != nil {
@@ -75,7 +79,11 @@ func uploadImage(w http.ResponseWriter, r *http.Request) {
 	imagesLock.Unlock()
 
 	w.WriteHeader(http.StatusCreated)
-	fmt.Fprintf(w, `{"id": "%s", "properties": %s, "data": %s}`, image.ID, image.Properties, image.Data)
+	_, err = fmt.Fprintf(w, `{"id": "%s", "properties": %s, "data": %s}`, image.ID, image.Properties, image.Data)
+	if err != nil {
+		fmt.Print("Server Error: ", err.Error())
+		return
+	}
 }
 
 func getImageByID(w http.ResponseWriter, r *http.Request) {
@@ -99,7 +107,11 @@ func getImageByID(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/jpeg")
 
 	w.WriteHeader(http.StatusOK)
-	w.Write(imageData)
+	_, err = w.Write(imageData)
+	if err != nil {
+		fmt.Println("Server Error: ", err.Error())
+		return
+	}
 }
 
 func handleError(w http.ResponseWriter, message string, statusCode int) {
